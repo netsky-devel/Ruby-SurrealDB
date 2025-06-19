@@ -7,7 +7,6 @@ require_relative 'surrealdb/connection'
 require_relative 'surrealdb/connection_pool'
 require_relative 'surrealdb/query_builder'
 require_relative 'surrealdb/client'
-require_relative 'surrealdb/performance_client'
 require_relative 'surrealdb/live_query'
 require_relative 'surrealdb/model'
 require_relative 'surrealdb/rails'
@@ -23,6 +22,7 @@ require_relative 'surrealdb/rails'
 # - Graph relations and RELATE operations
 # - Authentication and session management
 # - Full SurrealQL support
+# - Connection pooling and caching for high performance
 module SurrealDB
   class << self
     # Connect to SurrealDB with various options
@@ -32,6 +32,9 @@ module SurrealDB
     # @param database [String, nil] Default database
     # @param timeout [Integer] Connection timeout in seconds
     # @param websocket [Boolean] Force WebSocket connection for HTTP URLs
+    # @param pool_size [Integer, nil] Enable connection pooling with specified size
+    # @param cache_enabled [Boolean] Enable query result caching
+    # @param cache_ttl [Integer] Cache TTL in seconds
     # @return [SurrealDB::Client] Client instance
     # 
     # @example HTTP connection
@@ -48,6 +51,14 @@ module SurrealDB
     #     database: 'main'
     #   )
     #   db.signin(user: 'root', pass: 'root')
+    # 
+    # @example High-performance connection with pooling
+    #   db = SurrealDB.connect(
+    #     url: 'http://localhost:8000',
+    #     pool_size: 10,
+    #     cache_enabled: true,
+    #     cache_ttl: 300
+    #   )
     # 
     # @example With Live Query callback
     #   db = SurrealDB.connect(
@@ -108,9 +119,9 @@ module SurrealDB
     # @param pool_size [Integer] Connection pool size
     # @param cache_enabled [Boolean] Enable query caching
     # @param cache_ttl [Integer] Cache TTL in seconds
-    # @return [SurrealDB::PerformanceClient] Performance client instance
+    # @return [SurrealDB::Client] Client instance with performance optimizations
     def performance_connect(url:, pool_size: 10, cache_enabled: true, cache_ttl: 300, **options)
-      PerformanceClient.new(
+      Client.new(
         url: url,
         pool_size: pool_size,
         cache_enabled: cache_enabled,

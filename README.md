@@ -485,7 +485,15 @@ This gem is available as open source under the terms of the [MIT License](LICENS
 
 ### Connection Pooling & Performance
 ```ruby
-# High-performance client with connection pooling
+# Option 1: Enable performance features in main client
+client = SurrealDB.connect(
+  url: 'http://localhost:8000',
+  pool_size: 20,           # Enable connection pooling
+  cache_enabled: true,     # Enable query caching
+  cache_ttl: 300          # Cache TTL in seconds
+)
+
+# Option 2: Use convenience method
 client = SurrealDB.performance_connect(
   url: 'http://localhost:8000',
   pool_size: 20,
@@ -493,16 +501,27 @@ client = SurrealDB.performance_connect(
   cache_ttl: 300
 )
 
-# Batch operations for better performance
+# Cached queries (available when cache_enabled: true)
+result = client.query(
+  "SELECT * FROM users WHERE active = $active",
+  { active: true },
+  cache_key: "active_users"  # Results will be cached
+)
+
+# Batch operations (available when pool_size > 1)
 queries = [
   { sql: "SELECT * FROM users WHERE active = true" },
   { sql: "SELECT COUNT(*) FROM posts" }
 ]
 results = client.batch_query(queries)
 
-# Bulk insert with chunking
+# Bulk insert with chunking (available when pool_size > 1)
 records = 1000.times.map { |i| { name: "User #{i}" } }
 client.bulk_insert('users', records, chunk_size: 100)
+
+# Monitor performance
+puts client.cache_stats
+# => { enabled: true, size: 5, ttl: 300 }
 ```
 
 ### Ruby on Rails Integration
