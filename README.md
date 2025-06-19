@@ -377,6 +377,8 @@ bundle exec rspec --format documentation
 - `SurrealDB.connect(url:, **options)` - Generic connection
 - `SurrealDB.http_connect(**options)` - HTTP connection
 - `SurrealDB.websocket_connect(**options)` - WebSocket connection
+- `SurrealDB.performance_connect(**options)` - High-performance connection with pooling
+- `SurrealDB.connection_pool(**options)` - Create connection pool
 
 ### Authentication Methods
 - `signin(user:, pass:, **options)` - User authentication
@@ -446,6 +448,10 @@ This gem is available as open source under the terms of the [MIT License](LICENS
 - ✅ **Fluent Query Builder** - Intuitive query construction
 - ✅ **Comprehensive Error Handling** - Production-ready error management
 - ✅ **Connection Management** - ping, health checks, auto-reconnect ready
+- ✅ **Connection Pooling** - High-performance connection management
+- ✅ **Query Caching** - Advanced caching with TTL support
+- ✅ **Rails Integration** - Complete Ruby on Rails framework support
+- ✅ **ActiveRecord-like ORM** - Familiar Ruby model interface
 
 ### 📊 **Compatibility Matrix**
 
@@ -461,16 +467,101 @@ This gem is available as open source under the terms of the [MIT License](LICENS
 | Transactions | ✅ | ✅ | **READY** |
 | Graph Relations | ✅ | ✅ | **READY** |
 | Session Variables | ✅ | ✅ | **READY** |
+| Connection Pooling | ✅ | ✅ | **READY** |
+| Query Caching | ✅ | ✅ | **READY** |
+| Rails Integration | ✅ | ✅ | **READY** |
+| ActiveRecord ORM | ✅ | ✅ | **READY** |
 
 **🚀 This Ruby SDK provides feature parity with official JavaScript and Python SDKs!**
 
+### 🚀 **Production Enhancements (NEW!)**
+- ✅ **Connection Pooling** - High-performance connection management
+- ✅ **Advanced Caching** - Query result caching with TTL
+- ✅ **Performance Client** - Optimized client with batch operations
+- ✅ **Ruby on Rails Integration** - Complete Rails framework support
+- ✅ **ActiveRecord-like ORM** - Familiar Ruby model interface
+
+## 🔥 **New Production Features**
+
+### Connection Pooling & Performance
+```ruby
+# High-performance client with connection pooling
+client = SurrealDB.performance_connect(
+  url: 'http://localhost:8000',
+  pool_size: 20,
+  cache_enabled: true,
+  cache_ttl: 300
+)
+
+# Batch operations for better performance
+queries = [
+  { sql: "SELECT * FROM users WHERE active = true" },
+  { sql: "SELECT COUNT(*) FROM posts" }
+]
+results = client.batch_query(queries)
+
+# Bulk insert with chunking
+records = 1000.times.map { |i| { name: "User #{i}" } }
+client.bulk_insert('users', records, chunk_size: 100)
+```
+
+### Ruby on Rails Integration
+```ruby
+# config/initializers/surrealdb.rb
+SurrealDB::Rails::Integration.configure do |config|
+  config.url = ENV['SURREALDB_URL']
+  config.namespace = Rails.env
+  config.database = Rails.application.class.name.underscore
+  config.pool_size = Rails.env.production? ? 20 : 5
+  config.cache_enabled = Rails.env.production?
+end
+
+# In your controllers
+class UsersController < ApplicationController
+  def index
+    @users = surrealdb.select('users')
+  end
+  
+  def create
+    with_surrealdb_transaction do
+      surrealdb.create('users', user_params)
+    end
+  end
+end
+```
+
+### ActiveRecord-like ORM
+```ruby
+# Define models
+class User < SurrealDB::Model
+  table 'users'  # Custom table name
+end
+
+class Post < SurrealDB::Model
+  # Uses default table name 'posts'
+end
+
+# Use like ActiveRecord
+user = User.create(name: 'John', email: 'john@example.com')
+user.age = 30
+user.save
+
+# Query with familiar syntax
+User.where(active: true)
+User.find('user123')
+User.all
+User.count
+
+# Dynamic attributes
+user.name = 'Jane'
+user.custom_field = 'value'
+```
+
 ## 📈 Future Enhancements (Optional)
 
-- [ ] Connection pooling for high-throughput applications
-- [ ] Advanced caching mechanisms  
 - [ ] Vector search support (when available in SurrealDB 2.1+)
 - [ ] Streaming query results for large datasets
 - [ ] Enhanced GraphQL schema introspection
-- [ ] Performance optimizations
-- [ ] Ruby on Rails integration helpers
-- [ ] ActiveRecord-like ORM layer 
+- [ ] Advanced model validations and callbacks
+- [ ] Database migrations system
+- [ ] Query optimization hints 

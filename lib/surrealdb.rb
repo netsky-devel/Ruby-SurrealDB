@@ -4,9 +4,13 @@ require_relative 'surrealdb/version'
 require_relative 'surrealdb/error'
 require_relative 'surrealdb/result'
 require_relative 'surrealdb/connection'
+require_relative 'surrealdb/connection_pool'
 require_relative 'surrealdb/query_builder'
 require_relative 'surrealdb/client'
+require_relative 'surrealdb/performance_client'
 require_relative 'surrealdb/live_query'
+require_relative 'surrealdb/model'
+require_relative 'surrealdb/rails'
 
 # SurrealDB Ruby SDK
 # 
@@ -95,6 +99,36 @@ module SurrealDB
         url: url,
         namespace: namespace,
         database: database,
+        **options
+      )
+    end
+
+    # High-performance connection with connection pooling
+    # @param url [String] Connection URL
+    # @param pool_size [Integer] Connection pool size
+    # @param cache_enabled [Boolean] Enable query caching
+    # @param cache_ttl [Integer] Cache TTL in seconds
+    # @return [SurrealDB::PerformanceClient] Performance client instance
+    def performance_connect(url:, pool_size: 10, cache_enabled: true, cache_ttl: 300, **options)
+      PerformanceClient.new(
+        url: url,
+        pool_size: pool_size,
+        cache_enabled: cache_enabled,
+        cache_ttl: cache_ttl,
+        **options
+      )
+    end
+
+    # Create connection pool
+    # @param url [String] Connection URL
+    # @param size [Integer] Pool size
+    # @param timeout [Integer] Connection timeout
+    # @return [SurrealDB::ConnectionPool] Connection pool instance
+    def connection_pool(url:, size: 10, timeout: 5, **options)
+      ConnectionPool.new(
+        url: url,
+        size: size,
+        timeout: timeout,
         **options
       )
     end
