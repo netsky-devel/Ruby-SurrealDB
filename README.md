@@ -1,8 +1,41 @@
-# SurrealDB Ruby
+# SurrealDB Ruby SDK
 
-A clean and comprehensive Ruby client library for [SurrealDB](https://surrealdb.com/) with support for HTTP and WebSocket connections.
+A modern, comprehensive Ruby client for [SurrealDB](https://surrealdb.com) - the ultimate multi-model database for tomorrow's applications.
 
-## Installation
+[![Gem Version](https://badge.fury.io/rb/surrealdb.svg)](https://badge.fury.io/rb/surrealdb)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.txt)
+
+## 🚀 Features
+
+### Core Database Operations
+- **CRUD Operations**: Create, Read, Update, Delete with fluent API
+- **Advanced Queries**: Full SurrealQL support with query builder
+- **Transactions**: Atomic operations with rollback support
+- **Graph Relations**: RELATE operations for graph data
+
+### Modern SurrealDB 2.0+ Support
+- **Live Queries**: Real-time data synchronization via WebSocket
+- **GraphQL Support**: Query your database with GraphQL
+- **SurrealML Integration**: Machine learning model execution
+- **Vector Search**: Semantic search capabilities (coming soon)
+
+### Multiple Connection Types
+- **HTTP/HTTPS**: Traditional REST-like operations
+- **WebSocket/WSS**: Real-time bidirectional communication
+- **Auto-detection**: Smart connection type selection
+
+### Authentication & Security
+- **Multiple Auth Methods**: signin, signup, token-based authentication
+- **Scope Authentication**: Database-level and namespace-level access
+- **Session Management**: Persistent authentication state
+
+### Developer Experience
+- **Fluent Query Builder**: Intuitive, chainable query construction
+- **Rich Result Objects**: Convenient data access methods
+- **Comprehensive Error Handling**: Detailed error messages
+- **Type Safety**: Ruby-friendly API design
+
+## 📦 Installation
 
 Add this line to your application's Gemfile:
 
@@ -12,208 +45,392 @@ gem 'surrealdb'
 
 And then execute:
 
-    $ bundle install
+```bash
+bundle install
+```
 
 Or install it yourself as:
 
-    $ gem install surrealdb
+```bash
+gem install surrealdb
+```
 
-## Usage
+## 🎯 Quick Start
 
-### Basic Connection
+### Basic Connection and Operations
 
 ```ruby
 require 'surrealdb'
 
-# Connect using HTTP
-client = SurrealDB.connect('http://localhost:8000')
-
-# Connect using WebSocket
-client = SurrealDB.connect('ws://localhost:8000/rpc')
-
-# Connect with authentication
-client = SurrealDB.connect('http://localhost:8000', 
-  username: 'root', 
-  password: 'root',
+# Connect to SurrealDB
+db = SurrealDB.connect(
+  url: 'http://localhost:8000',
   namespace: 'test',
   database: 'test'
 )
-```
 
-### Basic Operations
-
-```ruby
-# Use namespace and database
-client.use('test', 'test')
+# Authenticate
+db.signin(user: 'root', pass: 'root')
 
 # Create a record
-result = client.create('users', { name: 'John Doe', age: 30 })
-puts result.first # => {"id" => "users:xyz", "name" => "John Doe", "age" => 30}
+user = db.create('users', {
+  name: 'John Doe',
+  email: 'john@example.com',
+  age: 30
+})
 
-# Select records
-users = client.select('users')
-users.each do |user|
-  puts "#{user['name']} is #{user['age']} years old"
+# Query with the fluent builder
+adults = db.from('users')
+          .where('age >= 18')
+          .order_by('name')
+          .limit(10)
+          .execute
+
+# Raw SQL queries
+result = db.query(
+  "SELECT * FROM users WHERE age > $age",
+  { age: 25 }
+)
+
+puts result.data
+```
+
+### WebSocket Connection with Live Queries
+
+```ruby
+# Connect via WebSocket for real-time features
+db = SurrealDB.websocket_connect(
+  host: 'localhost',
+  port: 8000,
+  namespace: 'test',
+  database: 'test'
+)
+
+# Set up authentication
+db.signin(user: 'root', pass: 'root')
+
+# Create a live query
+live_query = db.live('users')
+
+# Handle real-time updates
+live_query.on(:all) do |notification|
+  action = notification['action'] # CREATE, UPDATE, DELETE
+  data = notification['result']
+  
+  puts "User #{action}: #{data}"
 end
 
-# Select with conditions
-adults = client.select('users', { age: 30 })
+live_query.on('CREATE') do |data|
+  puts "New user created: #{data['name']}"
+end
 
-# Update records
-client.update('users', { status: 'active' }, { name: 'John Doe' })
-
-# Delete records
-client.delete('users', { age: 30 })
-
-# Find by ID
-user = client.find('users', 'xyz')
+# The live query will now receive updates in real-time
 ```
 
-### Query Builder
+## 🔧 Advanced Usage
 
-The gem provides a fluent query builder for constructing complex queries:
+### GraphQL Support (SurrealDB 2.0+)
 
 ```ruby
-# Using the query builder
-result = client.query_builder
-  .select('name', 'age')
-  .from('users')
-  .where('age > $min_age', { min_age: 18 })
-  .order_by('name')
-  .limit(10)
+# GraphQL query
+result = db.graphql(
+  query: '
+    query GetUsers($minAge: Int!) {
+      users(where: { age: { gte: $minAge } }) {
+        id
+        name
+        email
+        posts {
+          title
+          content
+        }
+      }
+    }
+  ',
+  variables: { minAge: 18 }
+)
+```
+
+### Graph Relations
+
+```ruby
+# Create relation between records
+db.relate(
+  'users:john',      # from
+  'follows',         # relation
+  'users:jane',      # to
+  { since: '2024-01-01' }  # relation data
+)
+
+# Query graph relationships
+followers = db.query("
+  SELECT ->follows->users.* AS followers 
+  FROM users:john
+")
+```
+
+### Machine Learning (SurrealML)
+
+```ruby
+# Execute ML function
+prediction = db.run_function(
+  'sentiment_analysis',  # function name
+  '1.0.0',              # version
+  { text: 'I love SurrealDB!' }  # arguments
+)
+
+puts prediction.data
+```
+
+### Session Variables (WebSocket only)
+
+```ruby
+# Set session variables
+db.let('current_user', 'users:john')
+db.let('permissions', ['read', 'write'])
+
+# Use in queries
+result = db.query("
+  SELECT * FROM posts 
+  WHERE author = $current_user
+")
+
+# Clear variables
+db.unset('current_user')
+```
+
+### Transaction Support
+
+```ruby
+db.transaction do |tx|
+  # Create user
+  user = tx.create('users', { name: 'Alice', email: 'alice@example.com' })
+  
+  # Create profile
+  profile = tx.create('profiles', { 
+    user: user.data['id'],
+    bio: 'Software Engineer'
+  })
+  
+  # If any operation fails, the entire transaction is rolled back
+end
+```
+
+## 🔍 Query Builder
+
+The fluent query builder provides an intuitive way to construct complex queries:
+
+```ruby
+# SELECT with conditions
+users = db.from('users')
+          .select('name', 'email', 'age')
+          .where('age >= 18')
+          .where('status = "active"')
+          .order_by('created_at DESC')
+          .limit(50)
+          .execute
+
+# JOIN operations
+posts_with_authors = db.from('posts')
+                       .select('title', 'content', 'author.name AS author_name')
+                       .where('published = true')
+                       .order_by('created_at DESC')
+                       .execute
+
+# Aggregations
+stats = db.from('users')
+          .select('COUNT(*) AS total_users')
+          .select('AVG(age) AS average_age')
+          .where('status = "active"')
+          .group_by('country')
+          .having('COUNT(*) > 10')
+          .execute
+
+# Complex updates
+db.from('users')
+  .update({ last_login: 'time::now()' })
+  .where('status = "active"')
   .execute
-
-# Get first result
-first_user = client.query_builder
-  .select
-  .from('users')
-  .where('name = $name', { name: 'John' })
-  .first
-
-# Complex queries
-result = client.query_builder
-  .select('department', 'count(*) as total')
-  .from('users')
-  .where('active = true')
-  .group_by('department')
-  .having('count(*) > 5')
-  .order_by('total', 'DESC')
-  .all
 ```
 
-### Raw SQL Queries
+## 🔐 Authentication
+
+### Basic Authentication
 
 ```ruby
-# Execute raw SQL
-result = client.query('SELECT * FROM users WHERE age > $age', { age: 25 })
+# Sign in with username/password
+result = db.signin(user: 'john', pass: 'secret123')
 
-# Transaction example
-client.transaction([
-  'CREATE users SET name = "Alice", age = 25',
-  'CREATE users SET name = "Bob", age = 30',
-  'UPDATE users SET status = "active" WHERE age > 25'
-])
+# Sign up new user
+result = db.signup(
+  ns: 'test',
+  db: 'test', 
+  ac: 'users',  # access method
+  email: 'new@example.com',
+  password: 'newpass123'
+)
+
+# Use token authentication
+db.authenticate('your-jwt-token-here')
+
+# Check authentication status
+puts "Authenticated: #{db.authenticated?}"
+
+# Invalidate session
+db.invalidate
 ```
 
-### Working with Results
+### Scope-based Authentication
 
 ```ruby
-result = client.select('users')
+# Authenticate with specific scope
+db.signin(
+  ns: 'production',
+  db: 'main',
+  ac: 'admin_users',
+  user: 'admin',
+  pass: 'admin_password'
+)
+```
 
-# Check if successful
-puts "Success!" if result.success?
+## 📊 Data Access and Results
+
+```ruby
+result = db.select('users')
+
+# Check if query was successful
+if result.success?
+  puts "Query successful!"
+else
+  puts "Error: #{result.error_message}"
+end
 
 # Access data
-puts result.first    # First record
-puts result.all      # All records
-puts result.count    # Number of records
-puts result.empty?   # Check if empty
+puts result.data        # Raw data array
+puts result.first       # First record
+puts result.count       # Number of records
+puts result.empty?      # Boolean
 
-# Iterate over results
+# Iterate through results
 result.each do |user|
-  puts user['name']
+  puts "User: #{user['name']}"
 end
 
-# Convert to array or hash
-array_data = result.to_a
-hash_data = result.to_h  # First record as hash
+# Convert to different formats
+hash_result = result.to_h    # Hash representation
+array_result = result.to_a   # Array representation
 ```
 
-### Connection Management
+## 🔧 Connection Management
 
 ```ruby
-# Check connection
-puts "Connected!" if client.alive?
-
-# Ping server
-puts "Server responding!" if client.ping
+# Check connection status
+puts "Connected: #{db.connected?}"
+puts "Alive: #{db.alive?}"
 
 # Get server info
-info = client.info
-puts "Database: #{info}"
+info = db.info
+version = db.version
+ping_result = db.ping
 
-# Close connection
-client.close
+# Graceful shutdown
+db.close
 ```
 
-### Error Handling
+## ⚠️ Error Handling
 
 ```ruby
 begin
-  client.query('INVALID SQL')
+  result = db.create('users', invalid_data)
+rescue SurrealDB::ConnectionError => e
+  puts "Connection failed: #{e.message}"
+rescue SurrealDB::AuthenticationError => e
+  puts "Authentication failed: #{e.message}"
 rescue SurrealDB::QueryError => e
   puts "Query error: #{e.message}"
-rescue SurrealDB::ConnectionError => e
-  puts "Connection error: #{e.message}"
-rescue SurrealDB::AuthenticationError => e
-  puts "Auth error: #{e.message}"
+rescue SurrealDB::TimeoutError => e
+  puts "Request timed out: #{e.message}"
 end
 ```
 
-## Configuration Options
+## 🧪 Testing
 
-```ruby
-client = SurrealDB.connect('http://localhost:8000', {
-  timeout: 30,          # Request timeout in seconds
-  namespace: 'test',    # Default namespace
-  database: 'test',     # Default database
-  username: 'root',     # Username for authentication
-  password: 'root'      # Password for authentication
-})
+Run the test suite:
+
+```bash
+bundle exec rspec
 ```
 
-## Connection Types
+Run with coverage:
 
-### HTTP Connection
-- Uses standard HTTP requests
-- Good for simple operations
-- Stateless
+```bash
+bundle exec rspec --format documentation
+```
 
-### WebSocket Connection
-- Real-time bidirectional communication
-- Better for live queries and subscriptions
-- Persistent connection
+## 📚 API Reference
 
-## Development
+### Connection Methods
+- `SurrealDB.connect(url:, **options)` - Generic connection
+- `SurrealDB.http_connect(**options)` - HTTP connection
+- `SurrealDB.websocket_connect(**options)` - WebSocket connection
 
-After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
+### Authentication Methods
+- `signin(user:, pass:, **options)` - User authentication
+- `signup(ns:, db:, ac:, **params)` - User registration
+- `authenticate(token)` - Token authentication
+- `invalidate()` - Clear authentication
 
-To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, update the version number in `version.rb`, and then run `bundle exec rake release`, which will create a git tag for the version, push git commits and the created tag, and push the `.gem` file to [rubygems.org](https://rubygems.org).
+### CRUD Operations
+- `create(table, data, **options)` - Create records
+- `select(table_or_record, **options)` - Read records
+- `update(table_or_record, data, **options)` - Update records
+- `upsert(table_or_record, data, **options)` - Insert or update
+- `delete(table_or_record, **options)` - Delete records
+- `insert(table, data, **options)` - Insert records
 
-## Contributing
+### Advanced Features
+- `live(table, diff: false)` - Create live query
+- `kill(query_uuid)` - Kill live query
+- `relate(from, relation, to, data)` - Create graph relation
+- `graphql(query, **options)` - Execute GraphQL
+- `run_function(name, version, args)` - Execute ML function
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/netsky-devel/Ruby-SurrealDB.
+### Query Methods
+- `query(sql, vars = {})` - Execute raw SQL
+- `from(table)` - Start query builder
+- `transaction(&block)` - Execute transaction
 
-## License
+### Utility Methods
+- `info()` - Get database info
+- `version()` - Get server version
+- `ping()` - Health check
+- `use(namespace:, database:)` - Change namespace/database
 
-The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
+## 🤝 Contributing
 
-## Changelog
+1. Fork it
+2. Create your feature branch (`git checkout -b my-new-feature`)
+3. Commit your changes (`git commit -am 'Add some feature'`)
+4. Push to the branch (`git push origin my-new-feature`)
+5. Create a new Pull Request
 
-### 0.1.0
-- Initial release
-- HTTP and WebSocket connection support
-- Query builder with fluent interface
-- Comprehensive test suite
-- Error handling and custom exceptions
-- Result wrapper with convenient methods 
+## 📄 License
+
+This gem is available as open source under the terms of the [MIT License](LICENSE.txt).
+
+## 🔗 Links
+
+- [SurrealDB Official Website](https://surrealdb.com)
+- [SurrealDB Documentation](https://surrealdb.com/docs)
+- [SurrealQL Language Guide](https://surrealdb.com/docs/surrealql)
+- [Ruby Gem Documentation](https://rubydoc.info/gems/surrealdb)
+
+## 📈 Roadmap
+
+- [ ] Connection pooling
+- [ ] Advanced caching mechanisms  
+- [ ] Vector search support
+- [ ] Streaming query results
+- [ ] Enhanced GraphQL schema introspection
+- [ ] Performance optimizations
+- [ ] Ruby on Rails integration helpers 
