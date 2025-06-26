@@ -5,212 +5,126 @@ require_relative 'connection_pool'
 require_relative 'query_builder'
 require_relative 'result'
 require_relative 'error'
+require_relative 'authentication_manager'
+require_relative 'cache_manager'
+require_relative 'query_executor'
 
 module SurrealDB
   # Main client class for interacting with SurrealDB
   # Provides high-level methods for CRUD operations, authentication, and database management
-  # Includes optional performance optimizations like connection pooling and caching
   class Client
-    attr_reader :connection, :pool, :cache_enabled, :cache_ttl
+    attr_reader :connection, :pool, :namespace, :database
 
     def initialize(url:, namespace: nil, database: nil, pool_size: nil, cache_enabled: false, cache_ttl: 300, **options)
       @namespace = namespace
       @database = database
-      @cache_enabled = cache_enabled
-      @cache_ttl = cache_ttl
-      @cache = {}
-      @cache_mutex = Mutex.new
-      @auth_params = nil
+      @connection_manager = create_connection_manager(url, pool_size, options)
+      @authentication_manager = AuthenticationManager.new(@connection_manager)
+      @cache_manager = CacheManager.new(cache_enabled, cache_ttl)
+      @query_executor = QueryExecutor.new(@connection_manager, @authentication_manager, @cache_manager)
       
-      # Initialize connection or connection pool based on pool_size
-      if pool_size && pool_size > 1
-        @pool = ConnectionPool.new(size: pool_size, url: url, namespace: namespace, database: database, **options)
-        @connection = nil # We'll use pool instead
-        @use_pool = true
-      else
-        @connection = Connection.new(url: url, **options)
-        @pool = nil
-        @use_pool = false
-        connect_and_setup
-      end
-      
-      # Setup authentication if provided
-      setup_auth(options) if options[:user] && options[:pass]
+      setup_initial_connection(options)
     end
 
     # Authentication methods
     def signin(user: nil, pass: nil, ns: nil, db: nil, ac: nil, **params)
-      auth_params = { user: user, pass: pass, ns: ns, db: db, ac: ac }.merge(params).compact
-      
-      if @use_pool
-        @auth_params = auth_params
-        result = @pool.with_connection { |conn| conn.query('signin', auth_params) }
-      else
-        result = @connection.query('signin', auth_params)
-        
-        if result.success?
-          @connection.authenticated = true
-          @connection.auth_token = result.data['token'] if result.data.is_a?(Hash) && result.data['token']
-        end
-      end
-      
-      result
+      auth_params = build_auth_params(user: user, pass: pass, ns: ns, db: db, ac: ac, **params)
+      @authentication_manager.signin(auth_params)
     end
 
     def signup(ns:, db:, ac:, **params)
-      auth_params = { ns: ns, db: db, ac: ac }.merge(params)
-      
-      if @use_pool
-        @auth_params = auth_params
-        result = @pool.with_connection { |conn| conn.query('signup', auth_params) }
-      else
-        result = @connection.query('signup', auth_params)
-        
-        if result.success?
-          @connection.authenticated = true
-          @connection.auth_token = result.data['token'] if result.data.is_a?(Hash) && result.data['token']
-        end
-      end
-      
-      result
+      auth_params = build_auth_params(ns: ns, db: db, ac: ac, **params)
+      @authentication_manager.signup(auth_params)
     end
 
     def authenticate(token)
-      if @use_pool
-        @auth_params = { token: token }
-        result = @pool.with_connection { |conn| conn.query('authenticate', token) }
-      else
-        result = @connection.query('authenticate', token)
-        
-        if result.success?
-          @connection.authenticated = true
-          @connection.auth_token = token
-        end
-      end
-      
-      result
+      @authentication_manager.authenticate(token)
     end
 
     def invalidate
-      if @use_pool
-        @auth_params = nil
-        result = @pool.with_connection { |conn| conn.query('invalidate') }
-      else
-        result = @connection.query('invalidate')
-        
-        if result.success?
-          @connection.authenticated = false
-          @connection.auth_token = nil
-        end
-      end
-      
-      result
+      @authentication_manager.invalidate
     end
 
     def info
-      execute_query('info')
+      @query_executor.execute('info')
     end
 
     # Connection management
     def ping
-      execute_query('ping')
+      @query_executor.execute('ping')
     end
 
     def version
-      execute_query('version')
+      @query_executor.execute('version')
     end
 
     def use(namespace: nil, database: nil)
-      @namespace = namespace if namespace
-      @database = database if database
-      execute_query('use', @namespace, @database)
+      update_namespace_and_database(namespace, database)
+      @query_executor.execute('use', @namespace, @database)
     end
 
     # Basic CRUD operations
     def create(table, data = nil, **options)
-      if data.nil?
-        execute_query('create', table, nil, options)
-      else
-        execute_query('create', table, data, options)
-      end
+      @query_executor.execute('create', table, data, options)
     end
 
     def select(table_or_record, **options)
-      execute_query('select', table_or_record, options)
+      @query_executor.execute('select', table_or_record, options)
     end
 
     def update(table_or_record, data = nil, **options)
-      execute_query('update', table_or_record, data, options)
+      @query_executor.execute('update', table_or_record, data, options)
     end
 
     def upsert(table_or_record, data = nil, **options)
-      execute_query('upsert', table_or_record, data, options)
+      @query_executor.execute('upsert', table_or_record, data, options)
     end
 
     def delete(table_or_record, **options)
-      execute_query('delete', table_or_record, options)
+      @query_executor.execute('delete', table_or_record, options)
     end
 
     def insert(table, data, **options)
-      execute_query('insert', table, data, options)
+      @query_executor.execute('insert', table, data, options)
     end
 
     # Graph operations
     def relate(from_record, relation, to_record, data = nil, **options)
-      if data.nil?
-        execute_query('relate', from_record, relation, to_record, options)
-      else
-        execute_query('relate', from_record, relation, to_record, data, options)
-      end
+      @query_executor.execute('relate', from_record, relation, to_record, data, options)
     end
 
     # GraphQL support (SurrealDB 2.0+)
     def graphql(query, variables: nil, operation_name: nil, **options)
-      query_obj = if query.is_a?(String)
-        { query: query }
-      else
-        query
-      end
-
-      query_obj[:variables] = variables if variables
-      query_obj[:operationName] = operation_name if operation_name
-
-      execute_query('graphql', query_obj, options)
+      query_obj = build_graphql_query(query, variables, operation_name)
+      @query_executor.execute('graphql', query_obj, options)
     end
 
     # Live queries (WebSocket only)
     def live(table, diff: false)
-      raise SurrealDB::ConnectionError, "Live queries require WebSocket connection" unless websocket_available?
-      
-      execute_query('live', table, diff)
+      validate_websocket_support('Live queries')
+      @query_executor.execute('live', table, diff)
     end
 
     def kill(query_uuid)
-      raise SurrealDB::ConnectionError, "Kill requires WebSocket connection" unless websocket_available?
-      
-      execute_query('kill', query_uuid)
+      validate_websocket_support('Kill')
+      @query_executor.execute('kill', query_uuid)
     end
 
     # Session variables (WebSocket only)
     def let(name, value)
-      raise SurrealDB::ConnectionError, "Session variables require WebSocket connection" unless websocket_available?
-      
-      execute_query('let', name, value)
+      validate_websocket_support('Session variables')
+      @query_executor.execute('let', name, value)
     end
 
     def unset(name)
-      raise SurrealDB::ConnectionError, "Session variables require WebSocket connection" unless websocket_available?
-      
-      execute_query('unset', name)
+      validate_websocket_support('Session variables')
+      @query_executor.execute('unset', name)
     end
 
     # Machine Learning (SurrealML)
     def run_function(func_name, version = nil, args = nil)
-      params = [func_name]
-      params << version if version
-      params << args if args
-      
-      execute_query('run', *params)
+      params = build_function_params(func_name, version, args)
+      @query_executor.execute('run', *params)
     end
 
     def ml_import(file_path, **options)
@@ -232,59 +146,21 @@ module SurrealDB
 
     # Advanced query methods with optional caching
     def query(sql, vars = {}, cache_key: nil)
-      # Check cache first
-      if @cache_enabled && cache_key
-        cached_result = get_from_cache(cache_key)
-        return cached_result if cached_result
-      end
-
-      result = execute_query('query', sql, vars)
-
-      # Cache successful results
-      if @cache_enabled && cache_key && result.success?
-        set_cache(cache_key, result)
-      end
-
-      result
+      @query_executor.execute_with_cache('query', cache_key, sql, vars)
     end
 
     alias_method :sql, :query
 
     # Performance methods (available when using connection pool)
     def batch_query(queries)
-      raise SurrealDB::ConfigurationError, "Batch queries require connection pooling (pool_size > 1)" unless @use_pool
-      
-      results = []
-      
-      @pool.with_connection do |connection|
-        authenticate_connection(connection) if @auth_params
-        
-        queries.each do |query_info|
-          sql = query_info[:sql]
-          vars = query_info[:vars] || {}
-          
-          result = connection.query('query', sql, vars)
-          results << result
-        end
-      end
-      
-      results
+      validate_connection_pool('Batch queries')
+      @query_executor.execute_batch(queries)
     end
 
     def bulk_insert(table, records, chunk_size: 1000)
-      raise SurrealDB::ConfigurationError, "Bulk insert requires connection pooling (pool_size > 1)" unless @use_pool
+      validate_connection_pool('Bulk insert')
       return [] if records.empty?
-      
-      results = []
-      records.each_slice(chunk_size) do |chunk|
-        result = @pool.with_connection do |connection|
-          authenticate_connection(connection) if @auth_params
-          connection.query('insert', table, chunk)
-        end
-        results << result
-      end
-      
-      results
+      @query_executor.execute_bulk_insert(table, records, chunk_size)
     end
 
     # Convenience methods
@@ -298,23 +174,12 @@ module SurrealDB
 
     def count(table)
       result = query("SELECT count() FROM #{table} GROUP ALL")
-      result.success? ? result.first['count'] : 0
+      extract_count_from_result(result)
     end
 
     # Transaction support
     def transaction(&block)
-      begin_result = query('BEGIN TRANSACTION')
-      raise SurrealDB::QueryError, "Failed to begin transaction" unless begin_result.success?
-
-      begin
-        result = yield(self)
-        commit_result = query('COMMIT TRANSACTION')
-        raise SurrealDB::QueryError, "Failed to commit transaction" unless commit_result.success?
-        result
-      rescue => e
-        cancel_result = query('CANCEL TRANSACTION')
-        raise e
-      end
+      execute_transaction(&block)
     end
 
     # Query builder integration
@@ -324,19 +189,11 @@ module SurrealDB
 
     # Connection status methods
     def connected?
-      if @use_pool
-        @pool.available_connections > 0
-      else
-        @connection.connected?
-      end
+      @connection_manager.connected?
     end
 
     def authenticated?
-      if @use_pool
-        @auth_params != nil
-      else
-        @connection.authenticated?
-      end
+      @authentication_manager.authenticated?
     end
 
     def alive?
@@ -347,111 +204,191 @@ module SurrealDB
 
     # Cleanup methods
     def close
-      if @use_pool
-        @pool.shutdown
-      else
-        @connection.close
-      end
-      clear_cache
+      @connection_manager.close
+      @cache_manager.clear
     end
 
     def reset
-      result = execute_query('reset')
-      clear_cache if @cache_enabled
+      result = @query_executor.execute('reset')
+      @cache_manager.clear
       result
     end
 
     # Cache management
     def clear_cache
-      @cache_mutex.synchronize { @cache.clear }
+      @cache_manager.clear
     end
 
     def cache_stats
-      @cache_mutex.synchronize do
-        {
-          enabled: @cache_enabled,
-          size: @cache.size,
-          ttl: @cache_ttl
-        }
-      end
+      @cache_manager.stats
     end
 
     private
 
-    def connect_and_setup
-      @connection.connect
-      use(namespace: @namespace, database: @database) if @namespace || @database
-    end
-
-    def setup_auth(options)
-      @auth_params = {
-        user: options[:user],
-        pass: options[:pass]
-      }
-    end
-
-    def execute_query(method, *args)
-      if @use_pool
-        @pool.with_connection do |connection|
-          authenticate_connection(connection) if @auth_params
-          connection.query(method, *args)
-        end
+    def create_connection_manager(url, pool_size, options)
+      if pool_size && pool_size > 1
+        @pool = ConnectionPool.new(size: pool_size, url: url, namespace: @namespace, database: @database, **options)
+        @connection = nil
+        PoolConnectionManager.new(@pool)
       else
-        @connection.query(method, *args)
+        @connection = Connection.new(url: url, **options)
+        @pool = nil
+        SingleConnectionManager.new(@connection)
       end
     end
 
-    def authenticate_connection(connection)
-      return if connection.authenticated
-      
-      if @auth_params[:token]
-        result = connection.query('authenticate', @auth_params[:token])
-      else
-        result = connection.query('signin', @auth_params)
-      end
-      
-      if result.success?
-        connection.authenticated = true
-      else
-        raise SurrealDB::AuthenticationError, "Failed to authenticate connection"
+    def setup_initial_connection(options)
+      @connection_manager.setup(@namespace, @database)
+      setup_initial_auth(options) if options[:user] && options[:pass]
+    end
+
+    def setup_initial_auth(options)
+      auth_params = { user: options[:user], pass: options[:pass] }
+      @authentication_manager.setup_initial_auth(auth_params)
+    end
+
+    def build_auth_params(**params)
+      params.compact
+    end
+
+    def update_namespace_and_database(namespace, database)
+      @namespace = namespace if namespace
+      @database = database if database
+    end
+
+    def build_graphql_query(query, variables, operation_name)
+      query_obj = query.is_a?(String) ? { query: query } : query
+      query_obj[:variables] = variables if variables
+      query_obj[:operationName] = operation_name if operation_name
+      query_obj
+    end
+
+    def build_function_params(func_name, version, args)
+      params = [func_name]
+      params << version if version
+      params << args if args
+      params
+    end
+
+    def validate_websocket_support(operation_name)
+      unless @connection_manager.websocket_available?
+        raise SurrealDB::ConnectionError, "#{operation_name} require WebSocket connection"
       end
     end
 
-    def websocket_available?
-      if @use_pool
-        # For pooled connections, we need to check if any connection supports WebSocket
-        # This is a simplified check - in a real implementation, you might want to 
-        # ensure all connections in the pool support WebSocket
-        true # Assume WebSocket support for now
-      else
-        @connection.websocket?
+    def validate_connection_pool(operation_name)
+      unless @connection_manager.pool_available?
+        raise SurrealDB::ConfigurationError, "#{operation_name} require connection pooling (pool_size > 1)"
       end
     end
 
-    def get_from_cache(key)
-      @cache_mutex.synchronize do
-        entry = @cache[key]
-        return nil unless entry
-        
-        # Check if expired
-        if Time.now - entry[:timestamp] > @cache_ttl
-          @cache.delete(key)
-          return nil
-        end
-        
-        entry[:result]
-      end
+    def extract_count_from_result(result)
+      result.success? ? result.first['count'] : 0
     end
 
-    def set_cache(key, result)
-      return unless key && result
-      
-      @cache_mutex.synchronize do
-        @cache[key] = {
-          result: result,
-          timestamp: Time.now
-        }
+    def execute_transaction(&block)
+      begin_result = query('BEGIN TRANSACTION')
+      raise SurrealDB::QueryError, "Failed to begin transaction" unless begin_result.success?
+
+      begin
+        result = yield(self)
+        commit_result = query('COMMIT TRANSACTION')
+        raise SurrealDB::QueryError, "Failed to commit transaction" unless commit_result.success?
+        result
+      rescue => e
+        query('CANCEL TRANSACTION')
+        raise e
       end
     end
   end
-end 
+
+  # Connection manager abstraction
+  class ConnectionManager
+    def connected?
+      raise NotImplementedError
+    end
+
+    def websocket_available?
+      raise NotImplementedError
+    end
+
+    def pool_available?
+      raise NotImplementedError
+    end
+
+    def setup(namespace, database)
+      raise NotImplementedError
+    end
+
+    def close
+      raise NotImplementedError
+    end
+  end
+
+  class SingleConnectionManager < ConnectionManager
+    def initialize(connection)
+      @connection = connection
+    end
+
+    def connected?
+      @connection.connected?
+    end
+
+    def websocket_available?
+      @connection.websocket?
+    end
+
+    def pool_available?
+      false
+    end
+
+    def setup(namespace, database)
+      @connection.connect
+      use_namespace_and_database(namespace, database) if namespace || database
+    end
+
+    def close
+      @connection.close
+    end
+
+    def execute_query(method, *args)
+      @connection.query(method, *args)
+    end
+
+    private
+
+    def use_namespace_and_database(namespace, database)
+      @connection.query('use', namespace, database)
+    end
+  end
+
+  class PoolConnectionManager < ConnectionManager
+    def initialize(pool)
+      @pool = pool
+    end
+
+    def connected?
+      @pool.available_connections > 0
+    end
+
+    def websocket_available?
+      true # Assume WebSocket support for pooled connections
+    end
+
+    def pool_available?
+      true
+    end
+
+    def setup(namespace, database)
+      # Pool setup is handled during initialization
+    end
+
+    def close
+      @pool.shutdown
+    end
+
+    def with_connection(&block)
+      @pool.with_connection(&block)
+    end
+  end
+end

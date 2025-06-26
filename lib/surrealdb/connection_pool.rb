@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'thread'
+require 'timeout'
 require_relative 'connection'
 require_relative 'error'
 
@@ -8,33 +9,38 @@ module SurrealDB
   # Connection pool for high-performance applications
   # Manages multiple connections to reduce connection overhead
   class ConnectionPool
+    DEFAULT_POOL_SIZE = 10
+    DEFAULT_TIMEOUT = 5
+    
     attr_reader :size, :url, :options, :timeout
 
-    def initialize(size: 10, url:, timeout: 5, **options)
+    def initialize(size: DEFAULT_POOL_SIZE, url:, timeout: DEFAULT_TIMEOUT, **options)
+      validate_initialization_params(size, url, timeout)
+      
       @size = size
       @url = url
       @timeout = timeout
       @options = options
       @pool = Queue.new
-      @created = 0
+      @created_connections_count = 0
       @mutex = Mutex.new
-      @shutdown = false
+      @is_shutdown = false
       
-      # Pre-fill pool with initial connections
-      fill_pool
+      initialize_pool
     end
 
     # Execute a block with a connection from the pool
     # @param block [Proc] Block to execute with connection
     # @return [Object] Result of the block
+    # @raise [SurrealDB::ConnectionError] if pool is shutdown
     def with_connection(&block)
-      raise SurrealDB::ConnectionError, "Connection pool is shutdown" if @shutdown
+      ensure_pool_is_active
       
-      connection = checkout
+      connection = acquire_connection
       begin
         yield(connection)
       ensure
-        checkin(connection) if connection
+        release_connection(connection) if connection
       end
     end
 
@@ -43,124 +49,188 @@ module SurrealDB
     def stats
       {
         size: @size,
-        available: @pool.size,
-        created: @created,
-        busy: @created - @pool.size,
-        shutdown: @shutdown
+        available: available_connections_count,
+        created: @created_connections_count,
+        busy: busy_connections_count,
+        shutdown: @is_shutdown
       }
     end
 
     # Shutdown the pool and close all connections
     def shutdown
-      @shutdown = true
-      
-      # Close all connections in pool
-      until @pool.empty?
-        connection = @pool.pop(non_block: true) rescue nil
-        connection&.close
-      end
-      
-      @created = 0
+      @is_shutdown = true
+      close_all_connections
+      reset_connection_counter
     end
 
     # Check if pool is healthy
     # @return [Boolean] True if pool is healthy
     def healthy?
-      !@shutdown && @created > 0
+      !@is_shutdown && @created_connections_count > 0
     end
 
     private
 
-    def fill_pool
-      @size.times do
-        connection = create_connection
-        @pool.push(connection) if connection
+    def validate_initialization_params(size, url, timeout)
+      raise ArgumentError, 'Pool size must be positive' if size <= 0
+      raise ArgumentError, 'URL cannot be nil or empty' if url.nil? || url.empty?
+      raise ArgumentError, 'Timeout must be positive' if timeout <= 0
+    end
+
+    def initialize_pool
+      @size.times { add_connection_to_pool }
+    end
+
+    def ensure_pool_is_active
+      raise SurrealDB::ConnectionError, 'Connection pool is shutdown' if @is_shutdown
+    end
+
+    def available_connections_count
+      @pool.size
+    end
+
+    def busy_connections_count
+      @created_connections_count - available_connections_count
+    end
+
+    def close_all_connections
+      until @pool.empty?
+        connection = extract_connection_from_pool
+        close_connection_safely(connection)
       end
     end
 
-    def checkout
-      # Try to get existing connection
-      connection = @pool.pop(non_block: true) rescue nil
-      
-      # If no connection available and we can create more
-      if connection.nil? && can_create_connection?
-        connection = create_connection
-      end
-      
-      # If still no connection, wait for one
-      if connection.nil?
-        Timeout.timeout(@timeout) do
-          connection = @pool.pop
-        end
-      end
-      
-      # Validate connection
-      if connection && !connection_valid?(connection)
-        connection.close rescue nil
-        @mutex.synchronize { @created -= 1 }
-        connection = create_connection
-      end
-      
-      connection
+    def reset_connection_counter
+      @created_connections_count = 0
+    end
+
+    def add_connection_to_pool
+      connection = create_new_connection
+      @pool.push(connection) if connection
+    end
+
+    def extract_connection_from_pool
+      @pool.pop(non_block: true)
+    rescue ThreadError
+      nil
+    end
+
+    def acquire_connection
+      connection = try_get_existing_connection || try_create_new_connection || wait_for_available_connection
+      ensure_connection_is_valid(connection)
     rescue Timeout::Error
       raise SurrealDB::TimeoutError, "Could not get connection from pool within #{@timeout} seconds"
     end
 
-    def checkin(connection)
-      return if @shutdown
+    def try_get_existing_connection
+      extract_connection_from_pool
+    end
+
+    def try_create_new_connection
+      return nil unless can_create_more_connections?
+      create_new_connection
+    end
+
+    def wait_for_available_connection
+      Timeout.timeout(@timeout) { @pool.pop }
+    end
+
+    def ensure_connection_is_valid(connection)
+      return connection if connection && connection_is_valid?(connection)
       
-      if connection_valid?(connection)
+      handle_invalid_connection(connection)
+      create_new_connection
+    end
+
+    def handle_invalid_connection(connection)
+      close_connection_safely(connection)
+      decrement_connection_counter
+    end
+
+    def release_connection(connection)
+      return if @is_shutdown
+      
+      if connection_is_valid?(connection)
         @pool.push(connection)
       else
-        connection.close rescue nil
-        @mutex.synchronize { @created -= 1 }
-        
-        # Replace with new connection if pool is not full
-        if @created < @size
-          new_connection = create_connection
-          @pool.push(new_connection) if new_connection
-        end
+        replace_invalid_connection(connection)
       end
     end
 
-    def create_connection
+    def replace_invalid_connection(connection)
+      close_connection_safely(connection)
+      decrement_connection_counter
+      add_replacement_connection_if_needed
+    end
+
+    def add_replacement_connection_if_needed
+      return unless @created_connections_count < @size
+      add_connection_to_pool
+    end
+
+    def create_new_connection
       @mutex.synchronize do
-        return nil if @created >= @size || @shutdown
+        return nil if cannot_create_connection?
         
-        begin
-          connection = Connection.new(url: @url, **@options)
-          connection.connect
-          @created += 1
-          connection
-        rescue => e
-          # Log error but don't raise to avoid breaking pool
-          warn "Failed to create connection: #{e.message}"
-          nil
-        end
+        attempt_connection_creation
       end
     end
 
-    def can_create_connection?
-      @mutex.synchronize { @created < @size }
+    def cannot_create_connection?
+      @created_connections_count >= @size || @is_shutdown
     end
 
-    def connection_valid?(connection)
-      return false unless connection
-      return false unless connection.connected?
+    def attempt_connection_creation
+      connection = build_connection
+      connection.connect
+      increment_connection_counter
+      connection
+    rescue => error
+      log_connection_creation_error(error)
+      nil
+    end
+
+    def build_connection
+      Connection.new(url: @url, **@options)
+    end
+
+    def increment_connection_counter
+      @created_connections_count += 1
+    end
+
+    def decrement_connection_counter
+      @mutex.synchronize { @created_connections_count -= 1 }
+    end
+
+    def log_connection_creation_error(error)
+      warn "Failed to create connection: #{error.message}"
+    end
+
+    def can_create_more_connections?
+      @mutex.synchronize { @created_connections_count < @size }
+    end
+
+    def connection_is_valid?(connection)
+      return false unless connection&.connected?
       
-      # Simple ping test
-      begin
-        # For HTTP connections, we can't easily test without making a request
-        # For WebSocket, we can check the connection state
-        if connection.websocket?
-          connection.connected?
-        else
-          # For HTTP, assume valid if not explicitly closed
-          true
-        end
-      rescue
-        false
+      perform_connection_health_check(connection)
+    end
+
+    def perform_connection_health_check(connection)
+      if connection.websocket?
+        connection.connected?
+      else
+        # For HTTP connections, assume valid if not explicitly closed
+        true
       end
+    rescue
+      false
+    end
+
+    def close_connection_safely(connection)
+      connection&.close
+    rescue
+      # Ignore errors when closing connections
     end
   end
-end 
+end
