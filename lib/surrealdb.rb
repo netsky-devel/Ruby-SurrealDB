@@ -10,6 +10,8 @@ require_relative 'surrealdb/client'
 require_relative 'surrealdb/live_query'
 require_relative 'surrealdb/model'
 require_relative 'surrealdb/rails'
+require_relative 'surrealdb/connection_factory'
+require_relative 'surrealdb/url_validator'
 
 # SurrealDB Ruby SDK
 # 
@@ -68,7 +70,7 @@ module SurrealDB
     #     }
     #   )
     def connect(url:, namespace: nil, database: nil, **options)
-      Client.new(
+      ConnectionFactory.create_client(
         url: url,
         namespace: namespace,
         database: database,
@@ -84,15 +86,8 @@ module SurrealDB
     # @param ssl [Boolean] Use HTTPS
     # @return [SurrealDB::Client] Client instance
     def http_connect(host: 'localhost', port: 8000, namespace: nil, database: nil, ssl: false, **options)
-      protocol = ssl ? 'https' : 'http'
-      url = "#{protocol}://#{host}:#{port}"
-      
-      connect(
-        url: url,
-        namespace: namespace,
-        database: database,
-        **options
-      )
+      url = ConnectionFactory.build_http_url(host: host, port: port, ssl: ssl)
+      connect(url: url, namespace: namespace, database: database, **options)
     end
 
     # Quick connection method for WebSocket
@@ -103,15 +98,8 @@ module SurrealDB
     # @param ssl [Boolean] Use WSS
     # @return [SurrealDB::Client] Client instance
     def websocket_connect(host: 'localhost', port: 8000, namespace: nil, database: nil, ssl: false, **options)
-      protocol = ssl ? 'wss' : 'ws'
-      url = "#{protocol}://#{host}:#{port}/rpc"
-      
-      connect(
-        url: url,
-        namespace: namespace,
-        database: database,
-        **options
-      )
+      url = ConnectionFactory.build_websocket_url(host: host, port: port, ssl: ssl)
+      connect(url: url, namespace: namespace, database: database, **options)
     end
 
     # High-performance connection with connection pooling
@@ -121,7 +109,7 @@ module SurrealDB
     # @param cache_ttl [Integer] Cache TTL in seconds
     # @return [SurrealDB::Client] Client instance with performance optimizations
     def performance_connect(url:, pool_size: 10, cache_enabled: true, cache_ttl: 300, **options)
-      Client.new(
+      connect(
         url: url,
         pool_size: pool_size,
         cache_enabled: cache_enabled,
@@ -153,10 +141,7 @@ module SurrealDB
     # @param url [String] URL to validate
     # @return [Boolean] True if valid
     def valid_url?(url)
-      uri = URI.parse(url)
-      %w[http https ws wss].include?(uri.scheme)
-    rescue URI::InvalidURIError
-      false
+      UrlValidator.valid?(url)
     end
   end
-end 
+end
